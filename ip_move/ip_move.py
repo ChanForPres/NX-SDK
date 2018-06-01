@@ -39,6 +39,12 @@ def evt_thread():
 
     nx_sdk_py.NxSdk.__swig_destroy__(sdk)
 
+'''
+Logic behind the steps given below is to do "show ip arp" to make sure it is a valid host IP address.
+If it is, do "show mac address-table ..." to determint the interface on which specific mac is learnt.
+Then do "show system internal l2fm l2dbg macdb address ..." command to know the recent history of the specific mac-address.
+''' 
+    
 def get_mac_from_arp(cli_parser, clicmd, target_ip):
     exec_cmd = "show ip arp {}".format(target_ip)
     arp_cmd = cli_parser.execShowCmd(exec_cmd, nx_sdk_py.R_JSON)
