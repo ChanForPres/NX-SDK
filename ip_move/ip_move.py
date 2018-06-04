@@ -5,19 +5,21 @@ import sys
 import nx_sdk_py
 import json
 import re
+import time
 
 cli_parser = 0
 sdk = 0
 event_hdlr = 0
+tracer = 0
 
 def evt_thread():
-    global cli_parser, sdk, event_hdlr
+    global cli_parser, sdk, event_hdlr, tracer
 
     sdk = nx_sdk_py.NxSdk.getSdkInst(len(sys.argv), sys.argv)
     if not sdk:
         return
 
-    sdk.setAppDesc("IP Movement")
+    sdk.setAppDesc("Track movement of IP on device")
 
     tracer = sdk.getTracer()
     tracer.event("[{}] Started service".format(sdk.getAppName()))
@@ -31,6 +33,7 @@ def evt_thread():
     cli_parser.setCmdHandler(cmd)
     cli_parser.addToParseTree()
 
+    print("Starting event loop, CTRL-C to interrupt")
     tracer.event("[{}] Starting event loop".format(sdk.getAppName()))
     sdk.startEventLoop()
 
@@ -41,21 +44,22 @@ def evt_thread():
 
 '''
 Logic behind the steps given below is to do "show ip arp" to make sure it is a valid host IP address.
-If it is, do "show mac address-table ..." to determint the interface on which specific mac is learnt.
+If it is, do "show mac address-table ..." to determine the interface on which specific mac is learnt.
 Then do "show system internal l2fm l2dbg macdb address ..." command to know the recent history of the specific mac-address.
 ''' 
-    
+
 def get_mac_from_arp(cli_parser, clicmd, target_ip):
+    global tracer
     exec_cmd = "show ip arp {}".format(target_ip)
     arp_cmd = cli_parser.execShowCmd(exec_cmd, nx_sdk_py.R_JSON)
     if arp_cmd:
         try:
             arp_json = json.loads(arp_cmd)
-        except ValueError as exc:
+        except ValueError:
             return None
         count = int(arp_json["TABLE_vrf"]["ROW_vrf"]["cnt-total"])
         if count:
-            intf = arp_json["TABLE_vrf"]["ROW_vrf"]["TABLE_adj"]["ROW_adj"]
+            intf = arp_json["TABLE_vrf"]["ROW_vrf"]["TABLE_adj"].get("ROW_adj")
             if intf.get("ip-addr-out") == target_ip:
                 target_mac = intf["mac"]
                 clicmd.printConsole("{} is currently present in ARP table, MAC address {}\n".format(target_ip, target_mac))
@@ -130,12 +134,20 @@ def find_mac_movement(cli_parser, clicmd, target_mac, mac_vlan):
 class pyCmdHandler(nx_sdk_py.NxCmdHandler):
     def postCliCb(self, clicmd):
         global cli_parser
+        global tracer
 
         if "show_ip_movement" in clicmd.getCmdName():
             target_ip = nx_sdk_py.void_to_string(clicmd.getParamValue("<ip>"))
 
             target_mac = get_mac_from_arp(cli_parser, clicmd, target_ip)
             mac_vlan = ""
+            if not target_mac:
+                with open("/ping_cmdfile", "w") as cmdfile:
+                    cmdfile.write("ping {}\n".format(target_ip))
+                res = cli_parser.execConfigCmd("/ping_cmdfile")
+                successful_ping_re = re.compile(r"\d+ bytes from \b(?:\d{1,3}\.){3}\d{1,3}\b: icmp_seq=\d+ ttl=\d+ time=\d+\.\d+")
+                if re.search(successful_ping_re, res):
+                    target_mac = get_mac_from_arp(cli_parser, clicmd, target_ip)
             if target_mac:
                 mac_vlan = get_vlan_from_cam(cli_parser, clicmd, target_mac)
                 if mac_vlan:
@@ -145,6 +157,8 @@ class pyCmdHandler(nx_sdk_py.NxCmdHandler):
                     clicmd.printConsole("No entries in MAC address table for {}".format(target_mac))
             else:
                 clicmd.printConsole("No entries in ARP table for {}".format(target_ip))
+        elif "show_test_cmd" in clicmd.getCmdName():
+            clicmd.printConsole("Command successfully used")
         return True
 
 def get_snmp_intf_index(if_index_dict_list):
@@ -160,4 +174,8 @@ def get_snmp_intf_index(if_index_dict_list):
                 index_dict["intf_name"] = ifindex_json["interface"]
     return if_index_dict_list
 
-evt_thread()
+try:
+    evt_thread()
+except KeyboardInterrupt:
+    print("CTRL-C, exiting...")
+    sys.exit()
